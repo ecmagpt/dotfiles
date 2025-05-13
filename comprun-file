@@ -1,0 +1,88 @@
+#!/bin/bash
+
+FULL=$1
+MODE=$2
+FILE=${FULL##*/}
+EXT=${FILE#*.}
+
+function time_exec {
+	TIMEFORMAT=$1
+	eval "time ($2)"
+}
+function comp_run {
+	if [ -n "$2" ]; then
+		time_exec $'======== %Rs ========\n' "$2"; fi
+
+	if ! find bin -mindepth 1 -print -quit | grep -q .; then
+		rm -rf bin; fi
+
+	time_exec $'\n======== %Rs ========' "$1"
+	exit
+}
+
+function first_line {
+	local LN=$(head -n 1 "$FULL")
+	if [[ $LN == *"#!"* ]]; then
+		comp_run "chmod +x '$FULL'; '$FULL'"; fi
+	if [[ $LN == *">>"* ]]; then
+		comp_run "${LN#*>>*}"; fi
+}
+function find_root {
+	while [ "$PWD" != "/" ] && [ "${PWD##*/}" != "src" ]; do
+		cd ..
+	done
+	if [ "$PWD" = "/" ]; then
+		cd "${FULL%/*}"; mkdir -p bin
+		OUT="bin/${FILE%%.*}"
+	else
+		cd ..; rm -rf bin; mkdir bin
+		OUT="bin/${PWD##*/}"
+		FILE='`find src -name \*.'$EXT' | xargs`'
+		if [ -f ".project" ]; then
+			ARGS=$(head -n 1 .project)
+			local LN=$(sed '2q;d' .project)
+			[ -n "$LN" ] && comp_run "$LN"
+		fi
+	fi
+}
+function run_ext {
+	RUN=$OUT
+	case $EXT in
+	"c" | "h")
+		COMPILE="gcc -pedantic -g -std=c11 -O2 -Wall -Wextra -o $OUT $FILE $ARGS"
+		if [ "$MODE" = "shift" ]; then
+			RUN="gdb -q --eval-command=run --eval-command=quit $OUT"; fi ;;
+	"scala")
+		function join(){ local IFS=';'; echo "$*"; }
+		LIBRARIES=$(join lib/*.jar "")bin
+		COMPILE="scalac -deprecation -feature -unchecked -classpath '$LIBRARIES' -d bin $FILE"
+		RUN='_SCMAIN=`grep -rl --text "main...(\[Ljava/lang/String;)V" . | sed -e "s/.*bin\/\([^$]*\)\.class/\1/" | tail -1 | tr / .`; [ -n "$_SCMAIN" ] && scala -cp "'$LIBRARIES'" $_SCMAIN' ;;
+	"java")
+		case $MODE in
+		"alt")
+			RUN="adb logcat" ;;
+		"shift")
+			COMPILE="ant debug"
+			RUN="adb install -r bin/*-debug.apk; adb shell am start -a android.intent.action.MAIN -n $ARGS" ;;
+		"norm")
+			COMPILE="mkdir .tmp; javac -d .tmp $FILE; cd .tmp; jar cfe ../$OUT.jar "'`grep -rl --text "main...(\[Ljava/lang/String;)V" . | sed -e "s/\.\/\([^$]*\)\.class/\1/" | tail -1` *; cd ..; rm -rf .tmp'
+			RUN="java -jar $OUT.jar" ;;
+		esac ;;
+	"cu")
+		COMPILE="nvcc -o $OUT $FILE $ARGS" ;;
+	"js")
+		RUN="node $FILE" ;;
+	"hs")
+		COMPILE="ghc -o $OUT $FILE $ARGS" 
+	esac
+}
+
+shopt -s nullglob
+cd "${FULL%/*}"
+clear
+
+first_line
+find_root
+run_ext
+
+comp_run "$RUN" "$COMPILE"
